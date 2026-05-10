@@ -1,5 +1,7 @@
 import sys
 import struct
+import argparse
+from pathlib import Path
 
 import numpy as np
 import tquat
@@ -42,6 +44,24 @@ class Projector(nn.Module):
 
 if __name__ == '__main__':
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batchsize', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--niter', type=int, default=500000)
+    parser.add_argument('--latent', type=str, default='./training_outputs/decompressor/latent.bin')
+    args = parser.parse_args()
+    
+    output_dir = Path('./training_outputs/projector')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA GPU is required for train_projector.py')
+    
+    device = torch.device('cuda')
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+    
     # Load data
     
     database = load_database('./database.bin')
@@ -50,7 +70,7 @@ if __name__ == '__main__':
     del database
     
     X = load_features('./features.bin')['features'].copy().astype(np.float32)
-    Z = load_latent('./latent.bin')['latent'].copy().astype(np.float32)
+    Z = load_latent(args.latent)['latent'].copy().astype(np.float32)
     
     nframes = X.shape[0]
     nfeatures = X.shape[1]
@@ -59,12 +79,13 @@ if __name__ == '__main__':
     # Parameters
     
     seed = 1234
-    batchsize = 32
-    lr = 0.001
-    niter = 500000
+    batchsize = args.batchsize
+    lr = args.lr
+    niter = args.niter
     
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.set_num_threads(1)
     
     # Fit acceleration structure for nearest neighbors search
@@ -79,24 +100,24 @@ if __name__ == '__main__':
     projector_mean_out = torch.as_tensor(np.hstack([
         X.mean(axis=0).ravel(),
         Z.mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     projector_std_out = torch.as_tensor(np.hstack([
         X.std(axis=0).ravel(),
         Z.std(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     projector_mean_in = torch.as_tensor(np.hstack([
         X.mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     projector_std_in = torch.as_tensor(np.hstack([
         X_scale.repeat(nfeatures),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     # Make networks
     
-    network_projector = Projector(nfeatures, nfeatures + nlatent)
+    network_projector = Projector(nfeatures, nfeatures + nlatent).to(device)
     
     # Function to generate test predictions
 
@@ -117,9 +138,9 @@ if __name__ == '__main__':
             
             nearest = tree.query(Xhat, k=1, return_distance=False)[:,0]
             
-            Xgnd = torch.as_tensor(X[nearest])
-            Zgnd = torch.as_tensor(Z[nearest])
-            Xhat = torch.as_tensor(Xhat)
+            Xgnd = torch.as_tensor(X[nearest], device=device)
+            Zgnd = torch.as_tensor(Z[nearest], device=device)
+            Xhat = torch.as_tensor(Xhat, device=device)
             
             # Project
             
@@ -142,7 +163,7 @@ if __name__ == '__main__':
             plt.tight_layout()
             
             try:
-                plt.savefig('projector_X.png')
+                plt.savefig(output_dir / 'projector_X.png')
             except IOError as e:
                 print(e)
 
@@ -160,7 +181,7 @@ if __name__ == '__main__':
             plt.tight_layout()
             
             try:
-                plt.savefig('projector_Z.png')
+                plt.savefig(output_dir / 'projector_Z.png')
             except IOError as e:
                 print(e)
 
@@ -168,7 +189,7 @@ if __name__ == '__main__':
 
     # Train
     
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir=str(output_dir / 'runs'))
 
     optimizer = torch.optim.AdamW(
         network_projector.parameters(), 
@@ -198,9 +219,9 @@ if __name__ == '__main__':
         
         nearest = tree.query(Xhat, k=1, return_distance=False)[:,0]
         
-        Xgnd = torch.as_tensor(X[nearest])
-        Zgnd = torch.as_tensor(Z[nearest])
-        Xhat = torch.as_tensor(Xhat)
+        Xgnd = torch.as_tensor(X[nearest], device=device)
+        Zgnd = torch.as_tensor(Z[nearest], device=device)
+        Xhat = torch.as_tensor(Xhat, device=device)
         Dgnd = torch.sqrt(torch.sum(torch.square(Xhat - Xgnd), dim=-1))
         
         # Projector
@@ -245,7 +266,7 @@ if __name__ == '__main__':
         
         if i % 1000 == 0:
             generate_predictions()
-            save_network('projector.bin', [
+            save_network(output_dir / 'projector.bin', [
                 network_projector.linear0, 
                 network_projector.linear1, 
                 network_projector.linear2, 

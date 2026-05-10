@@ -1,5 +1,7 @@
 import sys
 import struct
+import argparse
+from pathlib import Path
 
 import numpy as np
 import tquat
@@ -36,6 +38,24 @@ class Stepper(nn.Module):
 
 if __name__ == '__main__':
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batchsize', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--niter', type=int, default=500000)
+    parser.add_argument('--latent', type=str, default='./training_outputs/decompressor/latent.bin')
+    args = parser.parse_args()
+    
+    output_dir = Path('./training_outputs/stepper')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA GPU is required for train_stepper.py')
+    
+    device = torch.device('cuda')
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+    
     # Load data
     
     database = load_database('./database.bin')
@@ -44,7 +64,7 @@ if __name__ == '__main__':
     del database
     
     X = load_features('./features.bin')['features'].copy().astype(np.float32)
-    Z = load_latent('./latent.bin')['latent'].copy().astype(np.float32)
+    Z = load_latent(args.latent)['latent'].copy().astype(np.float32)
     
     nframes = X.shape[0]
     nfeatures = X.shape[1]
@@ -53,14 +73,15 @@ if __name__ == '__main__':
     # Parameters
     
     seed = 1234
-    batchsize = 32
-    lr = 0.001
-    niter = 500000
+    batchsize = args.batchsize
+    lr = args.lr
+    niter = args.niter
     window = 20
     dt = 1.0 / 60.0
     
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.set_num_threads(1)
     
     # Compute means/stds
@@ -71,31 +92,31 @@ if __name__ == '__main__':
     stepper_mean_out = torch.as_tensor(np.hstack([
         ((X[1:] - X[:-1]) / dt).mean(axis=0).ravel(),
         ((Z[1:] - Z[:-1]) / dt).mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     stepper_std_out = torch.as_tensor(np.hstack([
         ((X[1:] - X[:-1]) / dt).std(axis=0).ravel(),
         ((Z[1:] - Z[:-1]) / dt).std(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     stepper_mean_in = torch.as_tensor(np.hstack([
         X.mean(axis=0).ravel(),
         Z.mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     stepper_std_in = torch.as_tensor(np.hstack([
         X_scale.repeat(nfeatures),
         Z_scale.repeat(nlatent),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     # Make PyTorch tensors
     
-    X = torch.as_tensor(X)
-    Z = torch.as_tensor(Z)
+    X = torch.as_tensor(X, device=device)
+    Z = torch.as_tensor(Z, device=device)
     
     # Make networks
     
-    network_stepper = Stepper(nfeatures + nlatent)
+    network_stepper = Stepper(nfeatures + nlatent).to(device)
     
     # Function to generate test predictions
     
@@ -144,7 +165,7 @@ if __name__ == '__main__':
             plt.tight_layout()
             
             try:
-                plt.savefig('stepper_X.png')
+                plt.savefig(output_dir / 'stepper_X.png')
             except IOError as e:
                 print(e)
 
@@ -162,7 +183,7 @@ if __name__ == '__main__':
             plt.tight_layout()
             
             try:
-                plt.savefig('stepper_Z.png')
+                plt.savefig(output_dir / 'stepper_Z.png')
             except IOError as e:
                 print(e)
 
@@ -173,11 +194,11 @@ if __name__ == '__main__':
     indices = []
     for i in range(nframes - window):
         indices.append(np.arange(i, i + window))
-    indices = torch.as_tensor(np.array(indices), dtype=torch.long)
+    indices = torch.as_tensor(np.array(indices), dtype=torch.long, device=device)
     
     # Train
     
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir=str(output_dir / 'runs'))
 
     optimizer = torch.optim.AdamW(
         network_stepper.parameters(), 
@@ -262,7 +283,7 @@ if __name__ == '__main__':
         
         if i % 1000 == 0:
             generate_predictions()
-            save_network('stepper.bin', [
+            save_network(output_dir / 'stepper.bin', [
                 network_stepper.linear0, 
                 network_stepper.linear1, 
                 network_stepper.linear2],
