@@ -1,5 +1,6 @@
 import sys
 import struct
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -59,6 +60,11 @@ class Decompressor(nn.Module):
 
 if __name__ == '__main__':
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batchsize', type=int, default=32)
+    parser.add_argument('--lr', type=float, default=0.001)
+    args = parser.parse_args()
+    
     output_dir = Path('./training_outputs/decompressor')
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -94,8 +100,8 @@ if __name__ == '__main__':
     # Parameters
     
     seed = 1234
-    batchsize = 32
-    lr = 0.001
+    batchsize = args.batchsize
+    lr = args.lr
     niter = 500000
     window = 2
     dt = 1.0 / 60.0
