@@ -63,6 +63,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchsize', type=int, default=32)
     parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--niter', type=int, default=500000)
     args = parser.parse_args()
     
     output_dir = Path('./training_outputs/decompressor')
@@ -102,7 +103,7 @@ if __name__ == '__main__':
     seed = 1234
     batchsize = args.batchsize
     lr = args.lr
-    niter = 500000
+    niter = args.niter
     window = 2
     dt = 1.0 / 60.0
     
