@@ -1,5 +1,6 @@
 import sys
 import struct
+from pathlib import Path
 
 import numpy as np
 import tquat
@@ -58,6 +59,17 @@ class Decompressor(nn.Module):
 
 if __name__ == '__main__':
     
+    output_dir = Path('./training_outputs/decompressor')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA GPU is required for train_decompressor.py')
+    
+    device = torch.device('cuda')
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
+    
     # Load data
     
     database = load_database('./database.bin')
@@ -90,6 +102,7 @@ if __name__ == '__main__':
     
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.set_num_threads(1)
     
     # Compute world space
@@ -146,7 +159,7 @@ if __name__ == '__main__':
         Yrvel.mean(axis=0).ravel(),
         Yrang.mean(axis=0).ravel(),
         Yextra.mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     decompressor_std_out = torch.as_tensor(np.hstack([
         Ypos[:,1:].std(axis=0).ravel(),
@@ -156,10 +169,10 @@ if __name__ == '__main__':
         Yrvel.std(axis=0).ravel(),
         Yrang.std(axis=0).ravel(),
         Yextra.std(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
-    decompressor_mean_in = torch.zeros([nfeatures + nlatent], dtype=torch.float32)
-    decompressor_std_in = torch.ones([nfeatures + nlatent], dtype=torch.float32)
+    decompressor_mean_in = torch.zeros([nfeatures + nlatent], dtype=torch.float32, device=device)
+    decompressor_std_in = torch.ones([nfeatures + nlatent], dtype=torch.float32, device=device)
     
     compressor_mean_in = torch.as_tensor(np.hstack([
         Ypos[:,1:].mean(axis=0).ravel(),
@@ -173,7 +186,7 @@ if __name__ == '__main__':
         Yrvel.mean(axis=0).ravel(),
         Yrang.mean(axis=0).ravel(),
         Yextra.mean(axis=0).ravel(),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     compressor_std_in = torch.as_tensor(np.hstack([
         Ypos_scale.repeat((nbones-1)*3),
@@ -187,33 +200,33 @@ if __name__ == '__main__':
         Yrvel_scale.repeat(3),
         Yrang_scale.repeat(3),
         Yextra_scale.repeat(nextra),
-    ]).astype(np.float32))
+    ]).astype(np.float32), device=device)
     
     # Make PyTorch tensors
     
-    Ypos = torch.as_tensor(Ypos)
-    Yrot = torch.as_tensor(Yrot)
-    Ytxy = torch.as_tensor(Ytxy)
-    Yvel = torch.as_tensor(Yvel)
-    Yang = torch.as_tensor(Yang)
+    Ypos = torch.as_tensor(Ypos, device=device)
+    Yrot = torch.as_tensor(Yrot, device=device)
+    Ytxy = torch.as_tensor(Ytxy, device=device)
+    Yvel = torch.as_tensor(Yvel, device=device)
+    Yang = torch.as_tensor(Yang, device=device)
     
-    Qpos = torch.as_tensor(Qpos)
-    Qrot = torch.as_tensor(Qrot)
-    Qxfm = torch.as_tensor(Qxfm)
-    Qtxy = torch.as_tensor(Qtxy)
-    Qvel = torch.as_tensor(Qvel)
-    Qang = torch.as_tensor(Qang)
+    Qpos = torch.as_tensor(Qpos, device=device)
+    Qrot = torch.as_tensor(Qrot, device=device)
+    Qxfm = torch.as_tensor(Qxfm, device=device)
+    Qtxy = torch.as_tensor(Qtxy, device=device)
+    Qvel = torch.as_tensor(Qvel, device=device)
+    Qang = torch.as_tensor(Qang, device=device)
     
-    Yrvel = torch.as_tensor(Yrvel)
-    Yrang = torch.as_tensor(Yrang)
-    Yextra = torch.as_tensor(Yextra)
+    Yrvel = torch.as_tensor(Yrvel, device=device)
+    Yrang = torch.as_tensor(Yrang, device=device)
+    Yextra = torch.as_tensor(Yextra, device=device)
     
-    X = torch.as_tensor(X)
+    X = torch.as_tensor(X, device=device)
     
     # Make networks
     
-    network_compressor = Compressor(len(compressor_mean_in), nlatent)
-    network_decompressor = Decompressor(nfeatures + nlatent, len(decompressor_mean_out))
+    network_compressor = Compressor(len(compressor_mean_in), nlatent).to(device)
+    network_decompressor = Decompressor(nfeatures + nlatent, len(decompressor_mean_out)).to(device)
     
     # Function to save compressed database
     
@@ -239,7 +252,7 @@ if __name__ == '__main__':
             
             # Write latent variables
             
-            with open('latent.bin', 'wb') as f:
+            with open(output_dir / 'latent.bin', 'wb') as f:
                 f.write(struct.pack('II', nframes, nlatent) + Z.cpu().numpy().astype(np.float32).ravel().tobytes())
 
     # Function to generate test animation for comparison
@@ -322,7 +335,7 @@ if __name__ == '__main__':
             # Write BVH
             
             try:
-                bvh.save('decompressor_Ygnd.bvh', {
+                bvh.save(str(output_dir / 'decompressor_Ygnd.bvh'), {
                     'rotations': np.degrees(quat.to_euler(Ygnd_rot[0].cpu().numpy(), order='zyx')),
                     'positions': 100.0 * Ygnd_pos[0].cpu().numpy(),
                     'offsets': 100.0 * Ygnd_pos[0,0].cpu().numpy(),
@@ -331,7 +344,7 @@ if __name__ == '__main__':
                     'order': 'zyx'
                 })
                 
-                bvh.save('decompressor_Ytil.bvh', {
+                bvh.save(str(output_dir / 'decompressor_Ytil.bvh'), {
                     'rotations': np.degrees(quat.to_euler(Ytil_rot, order='zyx')),
                     'positions': 100.0 * Ytil_pos,
                     'offsets': 100.0 * Ytil_pos[0],
@@ -353,7 +366,7 @@ if __name__ == '__main__':
             plt.tight_layout()
             
             try:
-                plt.savefig('decompressor_X.png')
+                plt.savefig(output_dir / 'decompressor_X.png')
             except IOError as e:
                 print(e)
 
@@ -370,7 +383,7 @@ if __name__ == '__main__':
             plt.tight_layout()            
             
             try:
-                plt.savefig('decompressor_Z.png')
+                plt.savefig(output_dir / 'decompressor_Z.png')
             except IOError as e:
                 print(e)
 
@@ -381,11 +394,11 @@ if __name__ == '__main__':
     indices = []
     for i in range(nframes - window):
         indices.append(np.arange(i, i + window))
-    indices = torch.as_tensor(np.array(indices), dtype=torch.long)
+    indices = torch.as_tensor(np.array(indices), dtype=torch.long, device=device)
     
     # Train
     
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir=str(output_dir / 'runs'))
 
     optimizer = torch.optim.AdamW(
         list(network_compressor.parameters()) + 
@@ -581,7 +594,7 @@ if __name__ == '__main__':
         if i % 1000 == 0:
             generate_animation()
             save_compressed_database()
-            save_network('decompressor.bin', [
+            save_network(output_dir / 'decompressor.bin', [
                 network_decompressor.linear0, 
                 network_decompressor.linear1],
                 decompressor_mean_in,
